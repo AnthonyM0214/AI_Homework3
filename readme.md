@@ -117,3 +117,136 @@ training=model.fit(x_img_train_normalize, y_label_train_OneHot,validation_split=
 scores = model.evaluate(x_img_test_normalize, y_label_test_OneHot, verbose=0)
 ```
 结果为0.8069150501251221
+
+---
+
+## 3.MNIST数据集 GAN实现手写图像生成
+### 数据集简介
+MNIST是一个手写数字图像的数据集，每幅图像都由一个整数标记。数据集包含一个有6万个样例的训练集和一个有1万个样例的测试集。训练集用于让算法学习如何准确地预测出图像的整数标签，而测试集则用于检查已训练网络的预测有多准确。
+
+### GAN原理
+GAN的由两部分组成： 
+判别器(Discriminator) + 生成器(Generator)
+生成器主要用来学习真实图像分布从而让自身生成的图像更加真实，以骗过判别器。判别器则需要对接收的图片进行真假判别。
+在整个过程中，生成器努力地让生成的图像更加真实，而判别器则努力地去识别出图像的真假，这个过程相当于一个二人博弈，随着时间的推移，生成器和判别器在不断地进行对抗，最终两个网络达到了一个动态均衡：生成器生成的图像接近于真实图像分布，而判别器识别不出真假图像，对于给定图像的预测为真的概率基本接近0.5（相当于随机猜测类别）
+
+### 读取数据
+因为数据集已经处理完毕，直接用tensorflow自带的input函数就可以读取mnist_data
+```
+mnist = input_data.read_data_sets("mnist_data")
+```
+### 输入函数
+```
+# 模型输入
+def get_inputs(real_size, noise_size):
+#实际图像和随机噪声
+    real_img = tf.placeholder(tf.float32, [None, real_size], name="real_img")
+    noise_img = tf.placeholder(tf.float32, [None, noise_size], name="noise_img")
+    return real_img, noise_img
+```
+
+### 生成器
+ noise_img：随机噪声输入
+ out_dim,：输出的大小，例如在MNIS中为MNIST
+ n_units：中间隐藏层的单元个数
+ reuse：是否重复使用
+ alpha：LeakyReLU的参数
+
+```
+#生成器
+def get_generator(noise_img, n_units, out_dim, reuse=False, alpha=0.01):
+    with tf.variable_scope("generator", reuse=reuse):
+        hidden1 = tf.layers.dense(noise_img, n_units)  # 全连接层
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+        logits = tf.layers.dense(hidden1, out_dim)
+        outputs = tf.tanh(logits)
+        return logits, outputs
+```
+
+### 判别器
+img：输入的图像
+n_units：中间隐藏层的单元个数
+reuse：是否重复使用
+alpha：LeakyReLU的参数
+```
+#判别器
+def get_discriminator(img, n_units, reuse=False, alpha=0.01):
+    with tf.variable_scope("discriminator", reuse=reuse):
+        hidden1 = tf.layers.dense(img, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        logits = tf.layers.dense(hidden1, 1)
+        outputs = tf.sigmoid(logits)
+        return logits, outputs
+```
+### 模型搭建
+判别器的loss为 d_loss = d_loss_real + d_loss_fake, d_loss_real和d_loss_fake用的是二元交叉熵
+对于真实图像，给定的label全为1，但是作者认为1这个目标有点难，为了让网络更容易训练，把1降低为0.9 
+对于假图像，给定的label全为0
+生成器的loss为 g_loss，生成器希望欺骗判别器，因此给定的label全为1
+```
+#超参
+img_size = mnist.train.images[0].shape[0]
+noise_size = 100
+# 隐层神经元个数
+g_units = 128
+d_units = 128
+alpha = 0.01 # Leak factor
+learning_rate = 0.001
+smooth = 0.1
+
+#搭建模型
+tf.reset_default_graph()
+real_img, noise_img = get_inputs(img_size, noise_size)
+g_logits, g_outputs = get_generator(noise_img, g_units, img_size)
+#判别器
+d_logits_real, d_outputs_real = get_discriminator(real_img, d_units)
+d_logits_fake, d_outputs_fake = get_discriminator(g_outputs, d_units, reuse=True)
+#计算loss
+d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+    logits=d_logits_real, labels=tf.ones_like(d_logits_real)
+) * (1 - smooth))
+d_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+    logits=d_logits_fake, labels=tf.zeros_like(d_logits_fake)
+))
+d_loss = tf.add(d_loss_real, d_loss_fake)
+g_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+    logits=d_logits_fake, labels=tf.ones_like(d_logits_fake)
+) * (1 - smooth))
+# 获取相应要训练的变量
+train_vars = tf.trainable_variables()
+g_vars = [var for var in train_vars if var.name.startswith("generator")]
+d_vars = [var for var in train_vars if var.name.startswith("discriminator")]
+```
+
+### 训练函数和可视化
+```
+#训练参数
+epochs = 5000
+samples = []
+n_sample = 10
+losses = []
+
+with tf.Session() as sess:
+#    初始化参数
+    tf.global_variables_initializer().run()
+    for e in range(epochs):
+        batch_images = samples[e] * 2 -1
+        batch_noise = np.random.uniform(-1, 1, size=noise_size)
+ 
+        _ = sess.run(d_train_opt, feed_dict={real_img:[batch_images], noise_img:[batch_noise]})
+        _ = sess.run(g_train_opt, feed_dict={noise_img:[batch_noise]})
+ 
+    sample_noise = np.random.uniform(-1, 1, size=noise_size)
+    g_logit, g_output = sess.run(get_generator(noise_img, g_units, img_size,
+                                         reuse=True), feed_dict={
+        noise_img:[sample_noise]
+    })
+    print(g_logit.size)
+    g_output = (g_output+1)/2
+    plt.imshow(g_output.reshape([28, 28]), cmap='Greys_r')
+    plt.show()
+```
+结果
+![GAN MNIST](https://img-blog.csdnimg.cn/20190614101321882.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L0FudGhvbnlNMDg=,size_16,color_FFFFFF,t_70)
+很明显能分别出是2
